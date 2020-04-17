@@ -283,5 +283,62 @@ sample_xi <- function(y,theta,invSig_vec,zeta,psi,inds_y){
   return(xi)
 }
 
+sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
+  p = dim(theta)[1]
+  L = dim(theta)[2]
+  k = dim(psi)[1]
+  N = dim(psi)[2]
+  Sigma_0 = diag(1/invSig_vec)
+  
+  # We derive the sequential sampling of the zeta_{ll,kk} by reformulating
+  # the full regression problem as one that is solely in terms of
+  # zeta_{ll,kk} having conditioned on the other latent GP functions:
+  
+  # y_i = eta(i,m)*theta(:,ll)*zeta_{ll,kk}(x_i) + tilde(eps)_i,
+
+  # Initialize the structure for holding the conditional mean for additive
+  # Gaussian noise term tilde(eps)_i and add values based on previous zeta:
+  mu_tot = matrix(0,nrow = p, ncol = N)
+  Omega = array(rep(0,times = p*k*N), c(p,k,N))
+  OmegaInvOmegaOmegaSigma0 = array(rep(0,times = k*p*N), c(k,p,N))
+  for (nn in 1:N) {
+    Omega[inds_y[,nn], ,nn] = theta[inds_y[,nn],]%*%zeta[, ,nn]
+    if(dim(as.matrix(Omega[inds_y[,nn], ,nn]))[2]==1){
+      temp = mldivide((t(Omega[inds_y[,nn], ,nn]) %*% as.matrix(Omega[inds_y[,nn], ,nn]) + Sigma_0[inds_y[,nn],inds_y[,nn]]) , diag(sum(inds_y[,nn])))
+    OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = as.matrix(Omega[inds_y[,nn], ,nn]) %*% temp
+    } else {
+      temp = mldivide((as.matrix(Omega[inds_y[,nn], ,nn]) %*% t(Omega[inds_y[,nn], ,nn]) + Sigma_0[inds_y[,nn],inds_y[,nn]]), diag(sum(inds_y[,nn])))
+    OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = t(Omega[inds_y[,nn], ,nn])%*%temp
+    }
+    mu_tot[,nn] = Omega[, ,nn]%*%psi[,nn]
+  }
+  if (sum(sum(mu_tot))==0){ # if this is a call to initialize psi
+    numToIters = 50
+  } else {
+    numToIters = 5
+  }
+  for (numIter in c(1:numToIters)) {
+    for (kk in randperm(k,k)) { # create random ordering for kk in sampling zeta_{ll,kk} 
+      Omega_kk = drop(Omega[,kk,])
+      psi_kk = psi[kk,]
+      mu_tot = mu_tot - Omega_kk*matrix(psi_kk,nrow=p,ncol=N,byrow=TRUE)
+      
+      theta_k = as.matrix(diag(t(drop(OmegaInvOmegaOmegaSigma0[kk, ,]))%*%(y-mu_tot)))
+      Ak_invSig_Ak = diag(t(drop(OmegaInvOmegaOmegaSigma0[kk, ,]))%*%Omega_kk)
+      cholSig_k_trans = chol2inv(invK + diag(Ak_invSig_Ak))
+      
+      # Transform information parameters
+      m_k = cholSig_k_trans%*%(t(cholSig_k_trans)%*%theta_k)
+      
+      # Sample zeta_{ll,kk} from posterior Gaussian
+      psi[kk,] = m_k+cholSig_k_trans%*%matrix(rnorm(N),nrow=N,ncol=1)
+      
+      psi_kk = psi[kk,]
+      mu_tot = mu_tot + Omega_kk*matrix(psi_kk,nrow=p,ncol=N,byrow=TRUE)
+    }
+  }
+  return(psi)
+}
+
 #Run the script
 BNP_covreg(y, prior_params, settings, invK, K, inds_y)
