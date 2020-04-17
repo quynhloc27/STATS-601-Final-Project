@@ -70,7 +70,7 @@ prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 
 settings = c(
   L = 5, # truncation level for dictionary of latent GPs
   k = 4, # latent factor dimension
-  Niter = 2) # number of Gibbs iterations to run
+  Niter = 5) # number of Gibbs iterations to run
 
 # invK, K, inds_y are important function parameters
 inds_y = matrix(1, nrow = p, ncol = N)
@@ -282,3 +282,6 @@ sample_xi <- function(y,theta,invSig_vec,zeta,psi,inds_y){
   }
   return(xi)
 }
+
+#Run the script
+BNP_covreg(y, prior_params, settings, invK, K, inds_y)
