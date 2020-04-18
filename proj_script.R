@@ -77,9 +77,8 @@ for(ii in c(1:N)){
 }
 K = K + diag(r,nrow=N)
 invK = solve(K)
-logdetK = 2*sum(log(diag(chol(K))))
 
-prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2); 
+prior_params = c(K.c_prior = 1, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2); 
 
 settings = c(
   L = 8, # truncation level for dictionary of latent GPs
