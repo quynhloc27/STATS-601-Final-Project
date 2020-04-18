@@ -56,7 +56,6 @@ for (i in c(1:q)) {
     y[i,(start_dates[1,i]:T)] = covid[i,(start_dates[1,i]:T)]
   }
 }
-y = 1.75*y
 
 p = dim(y)[1]
 N = dim(y)[2]
