@@ -1,23 +1,29 @@
 library(pracma)
 library(MASS)
+library(usmap)
+library(ggplot2)
+library(data.table)
+library(dplyr)
 
 covid.states <- read.csv(url("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv"))
 covid.counties <- read.csv(url("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv"))
-states <- unique(covid.states$state)
-counties <- unique(covid.counties$county)
+fips.states <- unique(covid.states$fips)
+counties <- unique(covid.counties$fips)
 
 dates <- unique(covid.states$date)
 no_dates <- nlevels(dates)
-data.states <- matrix(0, nrow=no_dates,ncol=nlevels(states))
-colnames(data.states) <- states
-row.names(data.states) <- unique(covid.states$date)
+data.states <- matrix(0, nrow=no_dates,ncol=length(fips.states))
+colnames(data.states) <- fips.states
+row.names(data.states) <- dates
 
 for (row in dates){
-  data.states[row,c(as.character(covid.states$state[covid.states$date == row]))] <- covid.states$cases[covid.states$date == row]
+  data.states[row,c(as.character(covid.states$fips[covid.states$date == row]))] <- covid.states$cases[covid.states$date == row]
 }
-data.states = data.states[,-56]
+data.states = data.states[,-c(51,52,53,55,56)]
 # Cumulative Sums
 
+fips.states <- colnames(data.states)
+dates <- row.names(data.states)
 covid = t(data.states)
 start_dates = matrix(0,nrow = 1,ncol = dim(covid)[1])
 for (ii in c(1:dim(covid)[1])) {
@@ -34,13 +40,21 @@ q = dim(covid)[1]
 T = dim(covid)[2]
 vars = matrix(0, nrow = q, ncol = 1)
 for (i in c(1:q)) {
-  vars[i,]=var(covid[i,start_dates[1,i]:T])
+  if(start_dates[1,i] == T){
+    vars[i,] = 0
+  } else {
+    vars[i,] = var(covid[i,(start_dates[1,i]:T)])
+  }
 }
 
 covid = covid/sqrt(max(vars))
 y = matrix(0, nrow=q,ncol=T)
 for (i in c(1:q)) {
-  y[i,start_dates[1,i]:T] = covid[i,start_dates[1,i]:T]
+  if(start_dates[1,i] == T){
+    y[i,start_dates[1,i]] = covid[i,start_dates[1,i]]
+  } else {
+    y[i,(start_dates[1,i]:T)] = covid[i,(start_dates[1,i]:T)]
+  }
 }
 y = 1.75*y
 
@@ -52,6 +66,7 @@ N = dim(y)[2]
 # \epsilon_i \sim N(0,\Sigma_0),    \xi_i \sim N(0,I).
 x = c(1:N)/N
 
+c = 0.1
 d = 1
 r = 1e-5
 K = matrix(0, nrow=N, ncol=N)
@@ -65,12 +80,12 @@ K = K + diag(r,nrow=N)
 invK = solve(K)
 logdetK = 2*sum(log(diag(chol(K))))
 
-prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2) 
+prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2); 
 
 settings = c(
-L = 8, # truncation level for dictionary of latent GPs
-k = 12, # latent factor dimension
-Niter = 10000) # number of Gibbs iterations to run
+  L = 8, # truncation level for dictionary of latent GPs
+  k = 12, # latent factor dimension
+  Niter = 1000) # number of Gibbs iterations to run
 
 # invK, K, inds_y are important function parameters
 inds_y = matrix(1, nrow = p, ncol = N)
@@ -113,19 +128,22 @@ BNP_covreg <- function(y, prior_params, settings, invK, K, inds_y){
   num_iters = 1
   nstart = 1
   
+  washtenaw_list = list()
+  snohomish_list = list()
+  lincoln_list = list()
   for (nn in c(nstart:Niter)) {
     # Sample latent factor model additive Gaussian noise covariance
     # (diagonal matrix) given the data, weightings matrix, latent GP
     # functions, and latent factors:
     invSig_vec = sample_sig(y,theta,eta,zeta,prior_params,inds_y)
-    #print("invSig_vec:")
+    #print("invSig_vec")
     #print(invSig_vec)
     
     # Sample weightings matrix hyperparameters given weightings matrix:
     phi_tau = sample_hypers(theta,phi,tau,prior_params)
     phi <- phi_tau$phi
     tau <- phi_tau$tau
-    #print("phi: ")
+    #print("phi")
     #print(colSums(phi))
     #print("tau: ")
     #print(tau)
@@ -133,19 +151,19 @@ BNP_covreg <- function(y, prior_params, settings, invK, K, inds_y){
     # Sample weightings matrix given the data, latent factors, latent GP
     # functions, noise parameters, and hyperparameters:
     theta = sample_theta(y,eta,invSig_vec,zeta,phi,tau,inds_y)
-    #print("theta: ")
+    #print("theta")
     #print(colSums(theta))
     
     # sample the latent mean GPs \psi(x) marginalizing \xi
     psi = sample_psi_margxi(y,theta,invSig_vec,zeta,psi,invK,inds_y,nn)
     #psi = matrix(0, nrow=k, ncol=N)
-    #print("psi: ")
+    #print("psi")
     #print(colSums(psi))
     
     # Sample latent factors given the data, weightings matrix, latent GP
     # functions, and noise parameters.
     xi = sample_xi(y,theta,invSig_vec,zeta,psi,inds_y)
-    #print("xi:")
+    #print("xi")
     #print(colSums(xi))
     
     eta = psi + xi
@@ -153,22 +171,68 @@ BNP_covreg <- function(y, prior_params, settings, invK, K, inds_y){
     # Sample latent GP functions zeta_i given the data, weightings matrix,
     # latent factors, noise params, and GP cov matrix (hyperparameter):
     zeta = sample_zeta(y,theta,eta,invSig_vec,zeta,invK,inds_y)
-    #print("zeta:")
+    #print("zeta")
     #print(rowSums(colSums(zeta)))
     
     print(nn)
-  
-    if(mod(nn,1000)==0){ 
-      # condition on which chain of Gibbs samples we want our
-      # covariance estimate
+    
+    
+    
+    if(mod(nn,1000)==0){
       cov_est = matrix(0, nrow = p, ncol = N)
+      michigan_list = list()
+      washington_list = list()
+      nebraska_list = list()
       for (tt in c(1:N)) {
-        cov_est[,tt] = diag(theta %*% zeta[, ,tt] %*% t(zeta[, ,tt]) %*% t(theta) + diag((1/invSig_vec)))
+        SigmaX = theta %*% zeta[, ,tt] %*% t(zeta[, ,tt]) %*% t(theta) + diag((1/invSig_vec))
+        cov_est[,tt] = diag(SigmaX)
+        mat = cov2cor(SigmaX)
+        colnames(mat) <- fips.states
+        # Michigan
+        michigan = as.matrix(mat[,"26"])
+        row.names(michigan) <- fips.states
+        michigan <- tibble::rownames_to_column(data.frame(michigan),"fips")
+        colnames(michigan) <- c("fips","val")
+        p1 <- plot_usmap(regions="states",data=michigan,values="val",labels=TRUE) + labs(title="Michigan (1000 Gibbs Iterations)", subtitle=dates[tt]) + scale_fill_continuous(name="time-varying spatial correlation", low ="white", high = "blue", label = scales::comma) + theme(legend.position = "right")
+        michigan_list[[tt]] = p1
+        
+        # Washington
+        washington = as.matrix(mat[,"53"])
+        row.names(washington) <- fips.states
+        washington<-tibble::rownames_to_column(data.frame(washington),"fips")
+        colnames(washington) <- c("fips","val")
+        p2 <- plot_usmap(regions="states",data=washington,values="val",labels=TRUE) + labs(title="Washington (1000 Gibbs Iterations)", subtitle=dates[tt]) + scale_fill_continuous(name="time-varying spatial correlation",low ="white", high = "red", label = scales::comma) + theme(legend.position = "right")
+        washington_list[[tt]] = p2
+        
+        # Nebraska
+        nebraska = as.matrix(mat[,"31"])
+        row.names(nebraska) <- fips.states
+        nebraska<-tibble::rownames_to_column(data.frame(nebraska),"fips")
+        colnames(nebraska) <- c("fips","val")
+        p3 <- plot_usmap(regions="states",data=nebraska,values="val",labels=TRUE) + labs(title="Nebraska (1000 Gibbs Iterations)", subtitle=dates[tt]) + scale_fill_continuous(name="time-varying spatial correlation",low ="white", high = "green", label = scales::comma) + theme(legend.position = "right")
+        nebraska_list[[tt]] = p3
       }
-      return(cov_est)
+      
+      pdf("michigan.pdf")
+      for (i in c(1:N)) {
+        print(michigan_list[[i]])
+      }
+      dev.off()
+      pdf("washington.pdf")
+      for (i in c(1:N)) {
+        print(washington_list[[i]])
+      }
+      dev.off()
+      pdf("nebraska.pdf")
+      for (i in c(1:N)) {
+        print(nebraska_list[[i]])
+      }
+      dev.off()
+      return()
     }
   }
 }
+
 sample_zeta <- function(y, theta, eta, invSig_vec,zeta,invK,inds_y){
   
   p = dim(theta)[1]
@@ -273,7 +337,6 @@ sample_theta <- function(y,eta,invSig_vec,zeta,phi,tau,inds_y){
   return(theta)
 } 
 
-
 sample_xi <- function(y,theta,invSig_vec,zeta,psi,inds_y){
   # Sample latent factors eta_i using standard Gaussian identities based on
   # the fact that:
@@ -358,6 +421,4 @@ sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
   return(psi)
 }
 
-
-#Run the script
-cov_est <- BNP_covreg(y, prior_params, settings, invK, K, inds_y)
+BNP_covreg(y, prior_params, settings, invK, K, inds_y)
