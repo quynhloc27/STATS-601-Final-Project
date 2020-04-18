@@ -1,4 +1,5 @@
 library(pracma)
+library(MASS)
 
 covid.states <- read.csv(url("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv"))
 covid.counties <- read.csv(url("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv"))
@@ -51,7 +52,6 @@ N = dim(y)[2]
 # \epsilon_i \sim N(0,\Sigma_0),    \xi_i \sim N(0,I).
 x = c(1:N)/N
 
-c = 100  # Gaussian process length scale parameter.  Smaller c will lead to slower changes in correlations.
 d = 1
 r = 1e-5
 K = matrix(0, nrow=N, ncol=N)
@@ -61,16 +61,16 @@ for(ii in c(1:N)){
     K[ii,jj] = d*exp(-c*(dist_ii_jj^2))
   }
 }
-K = K + diag(r*rep(1,times=N),nrow = N, ncol = N)
+K = K + diag(r,nrow=N)
 invK = solve(K)
 logdetK = 2*sum(log(diag(chol(K))))
 
-prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2); 
+prior_params = c(K.c_prior = 1, K.logdetK = logdetK, sig.a_sig = 1, sig.b_sig = 0.1, hypers.a_phi = 1.5, hypers.b_phi = 1.5, hypers.a1 = 2, hypers.a2 = 2) 
 
 settings = c(
-  L = 5, # truncation level for dictionary of latent GPs
-  k = 4, # latent factor dimension
-  Niter = 5) # number of Gibbs iterations to run
+L = 8, # truncation level for dictionary of latent GPs
+k = 12, # latent factor dimension
+Niter = 10000) # number of Gibbs iterations to run
 
 # invK, K, inds_y are important function parameters
 inds_y = matrix(1, nrow = p, ncol = N)
@@ -95,7 +95,7 @@ BNP_covreg <- function(y, prior_params, settings, invK, K, inds_y){
   # Sample theta, eta, and Sigma initially as prior draws:
   theta = matrix(0, nrow=p, ncol=L)
   for(pp in c(1:p)){
-    theta[pp,] = t(chol(diag(1/(phi[pp,]*tau)), pivot = TRUE))%*%matrix(rnorm(L),nrow=L,ncol=1)
+    theta[pp,] = t(chol(diag(1/(phi[pp,]*tau))))%*%as.matrix(rnorm(L))
   }
   
   xi = matrix(rnorm(k*N),nrow=k,ncol=N)
@@ -112,44 +112,63 @@ BNP_covreg <- function(y, prior_params, settings, invK, K, inds_y){
   zeta = sample_zeta(y,theta,eta,invSig_vec,zeta,invK,inds_y)
   num_iters = 1
   nstart = 1
+  
   for (nn in c(nstart:Niter)) {
     # Sample latent factor model additive Gaussian noise covariance
     # (diagonal matrix) given the data, weightings matrix, latent GP
     # functions, and latent factors:
     invSig_vec = sample_sig(y,theta,eta,zeta,prior_params,inds_y)
+    #print("invSig_vec:")
+    #print(invSig_vec)
     
     # Sample weightings matrix hyperparameters given weightings matrix:
     phi_tau = sample_hypers(theta,phi,tau,prior_params)
     phi <- phi_tau$phi
     tau <- phi_tau$tau
+    #print("phi: ")
+    #print(colSums(phi))
+    #print("tau: ")
+    #print(tau)
     
     # Sample weightings matrix given the data, latent factors, latent GP
     # functions, noise parameters, and hyperparameters:
     theta = sample_theta(y,eta,invSig_vec,zeta,phi,tau,inds_y)
+    #print("theta: ")
+    #print(colSums(theta))
     
     # sample the latent mean GPs \psi(x) marginalizing \xi
-    #psi = sample_psi_margxi(y,theta,invSig_vec,zeta,psi,invK,inds_y,nn)
-    psi = matrix(0, nrow=k, ncol=N)
+    psi = sample_psi_margxi(y,theta,invSig_vec,zeta,psi,invK,inds_y,nn)
+    #psi = matrix(0, nrow=k, ncol=N)
+    #print("psi: ")
+    #print(colSums(psi))
     
     # Sample latent factors given the data, weightings matrix, latent GP
     # functions, and noise parameters.
     xi = sample_xi(y,theta,invSig_vec,zeta,psi,inds_y)
+    #print("xi:")
+    #print(colSums(xi))
     
     eta = psi + xi
     
     # Sample latent GP functions zeta_i given the data, weightings matrix,
     # latent factors, noise params, and GP cov matrix (hyperparameter):
     zeta = sample_zeta(y,theta,eta,invSig_vec,zeta,invK,inds_y)
+    #print("zeta:")
+    #print(rowSums(colSums(zeta)))
     
-    cov_est = matrix(0, nrow = p, ncol = N)
     print(nn)
-    for (tt in c(1:N)) {
-      cov_est[,tt] = diag(theta %*% zeta[, ,tt] %*% t(zeta[, ,tt]) %*% t(theta) + diag(1/invSig_vec))
+  
+    if(mod(nn,1000)==0){ 
+      # condition on which chain of Gibbs samples we want our
+      # covariance estimate
+      cov_est = matrix(0, nrow = p, ncol = N)
+      for (tt in c(1:N)) {
+        cov_est[,tt] = diag(theta %*% zeta[, ,tt] %*% t(zeta[, ,tt]) %*% t(theta) + diag((1/invSig_vec)))
+      }
+      return(cov_est)
     }
-    print(cov_est)
   }
 }
-
 sample_zeta <- function(y, theta, eta, invSig_vec,zeta,invK,inds_y){
   
   p = dim(theta)[1]
@@ -177,7 +196,7 @@ sample_zeta <- function(y, theta, eta, invSig_vec,zeta,invK,inds_y){
       ytilde = (y - mu_tot)*inds_y # normalize data by subtracting mean of tilde(eps)
       theta_lk = as.matrix(eta[kk,])*t(theta_tmp%*%ytilde)
       # Transform information parameters
-      cholSig_lk_trans = chol2inv(invK + diag(A_lk_invSig_A_lk,nrow = N))
+      cholSig_lk_trans = mldivide(chol(invK + diag(A_lk_invSig_A_lk,nrow = N)),diag(nrow=N))
       m_lk = cholSig_lk_trans%*%(t(cholSig_lk_trans)%*%theta_lk)
       
       # Sample zeta_{ll,kk} from posterior Gaussian
@@ -240,16 +259,15 @@ sample_theta <- function(y,eta,invSig_vec,zeta,phi,tau,inds_y){
   
   eta_tilde = matrix(0, nrow = L, ncol = N)
   for (nn in c(1:N)) {
-    eta_tilde[,nn] = zeta[, ,nn]%*%as.matrix(eta[,1])
+    eta_tilde[,nn] = zeta[, ,nn]%*%eta[,nn]
   }
   eta_tilde = t(eta_tilde)
   
   for (pp in c(1:p)) {
     inds_y_p = t(inds_y[pp,])
-    eta_tilde_p = eta_tilde*matrix(inds_y_p, nrow=N, ncol=L)
-    chol_Sig_theta_p_trans = chol2inv(diag(phi[pp,]*tau) + invSig_vec[pp]*(t(eta_tilde_p)%*%eta_tilde_p))
-    
-    m_theta_p = invSig_vec[pp]*(t(chol_Sig_theta_p_trans)%*%chol_Sig_theta_p_trans)%*%(t(eta_tilde_p)%*%as.matrix(y[pp,]))
+    eta_tilde_p = eta_tilde*matrix(inds_y_p, nrow=N, ncol=L,byrow = FALSE)
+    chol_Sig_theta_p_trans = mldivide(chol(diag(phi[pp,]*tau,nrow=L)+ invSig_vec[pp]*(t(eta_tilde_p)%*%eta_tilde_p)),diag(nrow=L))
+    m_theta_p = invSig_vec[pp]*(t(chol_Sig_theta_p_trans)%*%chol_Sig_theta_p_trans)%*%(t(eta_tilde_p)%*%y[pp,])
     theta[pp,] = m_theta_p + chol_Sig_theta_p_trans%*%as.matrix(rnorm(L,1))
   }
   return(theta)
@@ -276,7 +294,7 @@ sample_xi <- function(y,theta,invSig_vec,zeta,psi,inds_y){
     invSigMat = invSig_vec*t(inds_y[,nn])
     invSigMat = matrix(invSigMat, nrow=k,ncol=p,byrow=TRUE)
     zeta_theta_invSig = t(theta_zeta_n)*invSigMat
-    cholSig_xi_n_trans = chol2inv(diag(nrow=k)+zeta_theta_invSig%*%theta_zeta_n)
+    cholSig_xi_n_trans = mldivide(chol(diag(nrow=k) + zeta_theta_invSig%*%theta_zeta_n),diag(nrow=k))
     m_xi_n = cholSig_xi_n_trans%*%(t(cholSig_xi_n_trans)%*%(zeta_theta_invSig%*%y_tilde_n))
     xi[,nn] = m_xi_n + cholSig_xi_n_trans%*%as.matrix(rnorm(k,1))
   }
@@ -295,7 +313,7 @@ sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
   # zeta_{ll,kk} having conditioned on the other latent GP functions:
   
   # y_i = eta(i,m)*theta(:,ll)*zeta_{ll,kk}(x_i) + tilde(eps)_i,
-
+  
   # Initialize the structure for holding the conditional mean for additive
   # Gaussian noise term tilde(eps)_i and add values based on previous zeta:
   mu_tot = matrix(0,nrow = p, ncol = N)
@@ -305,10 +323,10 @@ sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
     Omega[inds_y[,nn], ,nn] = theta[inds_y[,nn],]%*%zeta[, ,nn]
     if(dim(as.matrix(Omega[inds_y[,nn], ,nn]))[2]==1){
       temp = mldivide((t(Omega[inds_y[,nn], ,nn]) %*% as.matrix(Omega[inds_y[,nn], ,nn]) + Sigma_0[inds_y[,nn],inds_y[,nn]]) , diag(sum(inds_y[,nn])))
-    OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = as.matrix(Omega[inds_y[,nn], ,nn]) %*% temp
+      OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = as.matrix(Omega[inds_y[,nn], ,nn]) %*% temp
     } else {
       temp = mldivide((as.matrix(Omega[inds_y[,nn], ,nn]) %*% t(Omega[inds_y[,nn], ,nn]) + Sigma_0[inds_y[,nn],inds_y[,nn]]), diag(sum(inds_y[,nn])))
-    OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = t(Omega[inds_y[,nn], ,nn])%*%temp
+      OmegaInvOmegaOmegaSigma0[,inds_y[,nn],nn] = t(Omega[inds_y[,nn], ,nn])%*%temp
     }
     mu_tot[,nn] = Omega[, ,nn]%*%psi[,nn]
   }
@@ -325,7 +343,7 @@ sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
       
       theta_k = as.matrix(diag(t(drop(OmegaInvOmegaOmegaSigma0[kk, ,]))%*%(y-mu_tot)))
       Ak_invSig_Ak = diag(t(drop(OmegaInvOmegaOmegaSigma0[kk, ,]))%*%Omega_kk)
-      cholSig_k_trans = chol2inv(invK + diag(Ak_invSig_Ak))
+      cholSig_k_trans = mldivide(chol(invK + diag(Ak_invSig_Ak)),diag(nrow=N))
       
       # Transform information parameters
       m_k = cholSig_k_trans%*%(t(cholSig_k_trans)%*%theta_k)
@@ -340,5 +358,6 @@ sample_psi_margxi <- function(y,theta,invSig_vec,zeta,psi,invK,inds_y,iter){
   return(psi)
 }
 
+
 #Run the script
-BNP_covreg(y, prior_params, settings, invK, K, inds_y)
+cov_est <- BNP_covreg(y, prior_params, settings, invK, K, inds_y)
